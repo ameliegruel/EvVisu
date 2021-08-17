@@ -1,4 +1,16 @@
-# Visualise events following (x,y,t,p) formalism over time
+"""
+Visualise events following (x,y,t,p)/(x,y,p,t) formalism over time
+
+Tokens: 
+- events (.npy or .csv file): events to be visualised, saved using the (x,y,p,t) or (x,y,t,p) formalism
+Optionnal tokens:
+- unit (string): define the timestamps' unit of measure (either 'ms' or 'nano')
+- reduce (bool): reduce the events (using the reduce function from reduceEvents.py)
+- save (bool): save the animation 
+- temporal (bool): save the converted csv file into a npy file (quicker to process)
+
+Author : Amelie Gruel
+"""
 
 import numpy as np 
 import csv
@@ -6,15 +18,15 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 import argparse
 import sys
-
-from numpy.core.fromnumeric import size
+from reduceEvents import reduce
 
 # initialise parser
 parser = argparse.ArgumentParser(description="Visualise events over time")
 parser.add_argument("events", metavar="E", type=str, nargs="+", help="Input events with formalism (x,y,t,p)")
-parser.add_argument("--save_csv_as_npy", "-C2N", help="Save the converted csv file into a npy file (quicker to process)", action="store_true", default=False)
-parser.add_argument("--save", "-s", help="Save the animation", action="store_true", default=False)
 parser.add_argument("--unit", "-u", help="Define the timestamps' unit of measure", nargs=1, type=str, default=["milli"])
+parser.add_argument("--reduce", "-r", help="Reduce the events", action="store_true", default=False)
+parser.add_argument("--save", "-s", help="Save the animation", action="store_true", default=False)
+parser.add_argument("--save_csv_as_npy", "-C2N", help="Save the converted csv file into a npy file (quicker to process)", action="store_true", default=False)
 args = parser.parse_args()
 
 # read the events
@@ -45,8 +57,6 @@ if format_csv:
     if args.save_csv_as_npy:
         np.save(args.events[0][:-3]+"npy", events)
         print("Processed events correctly saved as "+args.events[0][:-3]+"npy")
-
-print(events.shape)
 
 # get width and heigth
 W = max(events.T[0])
@@ -91,7 +101,7 @@ def animate(i):
     
     return scatter_pos_events, scatter_neg_events,
 
-animation = FuncAnimation(fig_events, animate, blit=True, interval=figure_interval)
+animation = FuncAnimation(fig_events, animate, blit=True, interval=figure_interval, save_count=1000)
 plt.title("Events from "+args.events[0]+" over time")
 plt.xlabel("Width (in pixels)")
 plt.ylabel("Height (in pixels)")
@@ -100,8 +110,9 @@ plt.draw()
 
 # save the video
 if args.save != None : 
-    f = "animation.gif" 
+    f = "Results/animation_"+args.events[0].split("/")[-1][:-4]+".gif" 
     writergif = PillowWriter(fps=frame_interval*1000) 
     animation.save(f, writer=writergif)
+    print("Animation correctly saved as "+f)
 
 plt.show()
