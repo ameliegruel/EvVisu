@@ -9,7 +9,8 @@ Optionnal tokens:
 - save (bool): save the animation 
 - temporal (bool): save the converted csv file into a npy file (quicker to process)
 
-Author : Amelie Gruel
+Author: Amelie Gruel
+Date: 08/2021
 """
 
 import numpy as np 
