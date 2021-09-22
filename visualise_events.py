@@ -8,6 +8,7 @@ Optionnal tokens:
 - reduce (bool): reduce the events (using the reduce function from reduceEvents.py)
 - save (bool): save the animation 
 - temporal (bool): save the converted csv file into a npy file (quicker to process)
+- 
 
 Author: Amelie Gruel
 Date: 08/2021
@@ -17,6 +18,7 @@ import numpy as np
 import csv
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.patches import Rectangle
 import argparse
 import sys
 from reduceEvents import reduce
@@ -26,6 +28,7 @@ parser = argparse.ArgumentParser(description="Visualise events over time")
 parser.add_argument("events", metavar="E", type=str, nargs="+", help="Input events with formalism (x,y,t,p)")
 parser.add_argument("--unit", "-u", help="Define the timestamps' unit of measure", nargs=1, type=str, default=["milli"])
 parser.add_argument("--reduce", "-r", help="Reduce the events", action="store_true", default=False)
+parser.add_argument("--region_of_interest", "-ROI", help="Visualise the region of interest (in case of foveation)", action="store_true", default=False)
 parser.add_argument("--save", "-s", help="Save the animation", action="store_true", default=False)
 parser.add_argument("--save_csv_as_npy", "-C2N", help="Save the converted csv file into a npy file (quicker to process)", action="store_true", default=False)
 args = parser.parse_args()
@@ -59,10 +62,6 @@ if format_csv:
         np.save(args.events[0][:-3]+"npy", events)
         print("Processed events correctly saved as "+args.events[0][:-3]+"npy")
 
-# get width and heigth
-W = max(events.T[0])
-H = max(events.T[1])
-
 # adapt to the 2 possible formalisms (x,y,p,t) or (x,y,t,p)
 if max(events.T[2] == 1):
     coord_p = 2
@@ -84,12 +83,38 @@ elif args.unit[0] == "nano":
     figure_interval = 50
 
 
+# reduce the events
+if args.reduce : 
+    print("Reducing events...", end=" ")
+    events=reduce(events, coord_ts, div=3)
+    print("DONE\n")
+
+# get width and heigth
+W = max(events.T[0])
+H = max(events.T[1])
+
+
 # initialise the figure
 timestamps=0
 fig_events = plt.figure()
 ax = plt.axes(xlim=(0,W), ylim=(0,H))
 scatter_pos_events = ax.scatter([],[], marker="s", animated=True, color="springgreen", label="Positive events")
 scatter_neg_events = ax.scatter([],[], marker="s", animated=True, color="dodgerblue", label="Negative events")
+
+# in case of foveation, we can display the region of interest
+if args.region_of_interest : 
+    print("Region of interest's coordonnates:")
+    xmin = int(input("x min: "))
+    xmax = int(input("x max: "))
+    ymin = int(input("y min: "))
+    ymax = int(input("y max: "))
+    ax.add_patch(Rectangle(
+        (xmin,ymin),
+        xmax-xmin,
+        ymax-ymin,
+        edgecolor="red",
+        fill=False
+    ))
 
 # define the animation
 def animate(i):
@@ -102,16 +127,21 @@ def animate(i):
     
     return scatter_pos_events, scatter_neg_events,
 
+add=""
 animation = FuncAnimation(fig_events, animate, blit=True, interval=figure_interval, save_count=1000)
-plt.title("Events from "+args.events[0]+" over time")
+if args.reduce:
+    add=" reduced"
+plt.title("Events from "+args.events[0]+add+" over time")
 plt.xlabel("Width (in pixels)")
 plt.ylabel("Height (in pixels)")
 plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=2)
 plt.draw()
 
 # save the video
-if args.save != None : 
-    f = "Results/animation_"+args.events[0].split("/")[-1][:-4]+".gif" 
+if args.save : 
+    if args.reduce :
+        add="_reduced" 
+    f = "Results/animation_"+args.events[0].split("/")[-1][:-4]+add+".gif" 
     writergif = PillowWriter(fps=frame_interval*1000) 
     animation.save(f, writer=writergif)
     print("Animation correctly saved as "+f)
