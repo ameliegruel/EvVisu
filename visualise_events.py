@@ -6,9 +6,9 @@ Tokens:
 Optionnal tokens:
 - unit (string): define the timestamps' unit of measure (either 'ms' or 'nano')
 - reduce (bool): reduce the events (using the reduce function from reduceEvents.py)
+- region of interest (bool): display the region of interest as a rectangle on the animation 
 - save (bool): save the animation 
-- temporal (bool): save the converted csv file into a npy file (quicker to process)
-- 
+- save csv as npy (bool): save the converted csv file into a npy file (quicker to process)
 
 Author: Amelie Gruel
 Date: 08/2021
@@ -17,11 +17,22 @@ Date: 08/2021
 import numpy as np 
 import csv
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
+plt.rcParams['animation.ffmpeg_path'] = '/usr/bin/ffmpeg'
 from matplotlib.patches import Rectangle
 import argparse
 import sys
 from reduceEvents import reduce
+
+# error handling
+def testNumericalInput(user_input):
+    while True:
+        try : 
+            user_input = int(user_input)
+            break
+        except ValueError :
+            user_input = input("Incorrect Value - Please enter a numerical value: ")
+    return int(user_input)
 
 # initialise parser
 parser = argparse.ArgumentParser(description="Visualise events over time")
@@ -85,8 +96,9 @@ elif args.unit[0] == "nano":
 
 # reduce the events
 if args.reduce : 
+    d = testNumericalInput(input("Reduce spatially by: "))
     print("Reducing events...", end=" ")
-    events=reduce(events, coord_ts, div=3)
+    events=reduce(events, coord_ts, div=d)
     print("DONE\n")
 
 # get width and heigth
@@ -103,18 +115,22 @@ scatter_neg_events = ax.scatter([],[], marker="s", animated=True, color="dodgerb
 
 # in case of foveation, we can display the region of interest
 if args.region_of_interest : 
-    print("Region of interest's coordonnates:")
-    xmin = int(input("x min: "))
-    xmax = int(input("x max: "))
-    ymin = int(input("y min: "))
-    ymax = int(input("y max: "))
-    ax.add_patch(Rectangle(
-        (xmin,ymin),
-        xmax-xmin,
-        ymax-ymin,
-        edgecolor="red",
-        fill=False
-    ))
+    nROI = testNumericalInput(input("How many different regions of interest ? "))
+    colors = plt.cm.get_cmap('hsv',nROI)
+    for n in range(nROI):
+        print(str(n+1)+" region of interest's coordonates:")
+        xmin = testNumericalInput(input("x min: "))
+        xmax = testNumericalInput(input("x max: "))
+        ymin = testNumericalInput(input("y min: "))
+        ymax = testNumericalInput(input("y max: "))
+        ax.add_patch(Rectangle(
+            (xmin,ymin),
+            xmax-xmin,
+            ymax-ymin,
+            edgecolor=colors(n),
+            fill=False
+        ))
+        print()
 
 # define the animation
 def animate(i):
@@ -141,8 +157,10 @@ plt.draw()
 if args.save : 
     if args.reduce :
         add="_reduced" 
-    f = "Results/animation_"+args.events[0].split("/")[-1][:-4]+add+".gif" 
+    f = "Results/animation_"+args.events[0].split("/")[-1][:-4]+add+".gif"
     writergif = PillowWriter(fps=frame_interval*1000) 
+    # f = "Results/animation_"+args.events[0].split("/")[-1][:-4]+add+".mp4" 
+    # writergif = FFMpegWriter(fps=frame_interval*1000)
     animation.save(f, writer=writergif)
     print("Animation correctly saved as "+f)
 
