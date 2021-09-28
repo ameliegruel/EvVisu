@@ -22,16 +22,11 @@ def reduce(
     spacial=True,
     temporal=True
     ):
-
-    def reduce_1event(event):
-        x=event
-        if spacial:
-            x[0] = event[0]/div
-            x[1] = event[1]/div 
-        if temporal:
-            x[coord_t] = int(round(event[coord_t]))
-        return x
-
-    reduced_events = np.array(list(map(reduce_1event, events)))
     
-    return reduced_events
+    if spacial:
+        events.T[0] = np.floor(events.T[0]/div)
+        events.T[1] = np.floor(events.T[1]/div)
+    if temporal:
+        events.T[coord_t] = np.floor(events.T[2])
+    _, idx=np.unique(events, axis=0, return_index=True)    
+    return events[np.sort(idx)]
