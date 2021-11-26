@@ -105,7 +105,7 @@ def spikes2ev(spikes, width, height, coord_t, polarity=1):
     return events
 
 
-def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density):
+def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual=True):
     sim.setup(timestep=0.01)
     
     width_downscale, height_downscale = getDownscaledSensorSize(width_fullscale, height_fullscale, div)
@@ -156,6 +156,8 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
     print("Populations done")
 
     fullscale2downscale = []
+    mutual_inhibition = []
+    c=int(downscale_events.size/2)
     for n in range(downscale_events.size):
         fullscale2downscale.append( sim.Projection(
             subregions_fullscale_events[n],
@@ -165,6 +167,22 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
             receptor_type="excitatory",
             label="Excitatory connection between fullscale and downscale events"
         ))
+    
+        if mutual:
+            if n < c: 
+                neuron = sim.PopulationView(downscale_events, [n+c])
+            else : 
+                neuron = sim.PopulationView(downscale_events, [n-c])
+            mutual_inhibition.append( sim.Projection(
+                subregions_fullscale_events[n],
+                neuron,
+                connector=sim.AllToAllConnector(),
+                synapse_type=sim.StaticSynapse(weight=density),
+                receptor_type="inhibitory",
+                label="Inhibitory connection between fullscale and downscale events"
+            ))
+
+    
     print("Connection done\n")
 
     class visualiseTime(object):
@@ -226,12 +244,17 @@ def SNN_downscale(
     last_time = 0
     nb_sim = int( np.max(events[:,coord_t]) // simulator_capacity + 1)
     print("Downscaling with Spiking Neural Network Pooling will run "+str(nb_sim)+" simulations")
-    nb_events_per_sim = int(len(events) / 2) + 1 
     for s in range(nb_sim):
         print("\n> Starting simulation "+str(s+1)+"...")
-        spikes = events[s*nb_events_per_sim:(s+1)*nb_events_per_sim]
-        sim_length=getTimeLength(spikes, coord_t)
+        spikes = events[ np.logical_and(
+            events[:,coord_t] > s*simulator_capacity,
+            events[:,coord_t] <= (s+1)*simulator_capacity, 
+        ) ]
         spikes[:,coord_t] -= last_time
+        sim_length=getTimeLength(spikes, coord_t)
+        print("Length simulation: "+str(sim_length)+" ts")
+        print(spikes.shape)
+        print(spikes)
 
         if keep_polarity:
             pos_events = ev2spikes(spikes[spikes[:,coord_p] > 0], coord_t, width_fullscale, height_fullscale)
@@ -372,7 +395,7 @@ def extrapolateLevels(timestamps, levels, timelength):
     for idx, value_t, value_l in data:
         timestamps = np.insert(timestamps, idx, value_t)
         levels = np.insert(levels, idx, value_l)
-    order = timestamps.argsort()
+    _,order = np.unique(timestamps, return_index=True)
     timestamps = timestamps[order]
     levels = levels[order]
     return timestamps, levels
@@ -397,8 +420,7 @@ def extractIntersections(timestamps, y_curve):
         Y_events += [y_ev]*len(t_ev) 
     
     # sort according to timestamps
-    order = np.argsort(T_events)
-    T_events = np.array(T_events)[order]
+    T_events, order = np.unique(T_events, return_index=True)
     Y_events = np.array(Y_events)[order]
 
     return T_events, Y_events
@@ -457,8 +479,7 @@ def logluminance_downscale(
         w_min, w_max, h_min, h_max = getFullscaleCoord(downscale_w, downscale_h, div)
         for fullscale_w in range(w_min, w_max):
             for fullscale_h in range(h_min, h_max):
-                ev_pixel, idx = np.unique(events[ np.logical_and( events[:,0]==fullscale_w , events[:,1]==fullscale_h ) ], axis=0, return_index=True)
-                ev_pixel = ev_pixel[idx.argsort()]
+                ev_pixel = events[ np.logical_and( events[:,0]==fullscale_w , events[:,1]==fullscale_h ) ]
                 t, levels = ev2points(ev_pixel, threshold, coord_p)
                 t, levels = extrapolateLevels(t, levels, timelength)
                 
