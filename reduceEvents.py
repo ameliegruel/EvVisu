@@ -28,7 +28,7 @@ def getNegativeEventsValue(events, coord_p):
     return np.unique(events[events[:,coord_p] < 1][:,coord_p]).item()
 
 def getDownscaledSensorSize(width, height, div):
-    return int(width/div), int(height/div)
+    return ceil(width/div), ceil(height/div)     # to keep modified ? 
 
 def newEvent(x,y,p,t, coord_t):
     if coord_t == 2:
@@ -59,7 +59,7 @@ def reduce(
     - spacial (bool): reduce spacially the events, by dividing the width and height of the captor by the div
     - temporal (bool): reduce temporally the events, by rounding thz timestamps to the ms
     """
-    
+    events = events.copy()
     if spacial:
         events[:,0] = np.floor(events[:,0]/div)
         events[:,1] = np.floor(events[:,1]/div)
@@ -105,7 +105,7 @@ def spikes2ev(spikes, width, height, coord_t, polarity=1):
     return events
 
 
-def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual=True):
+def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual=True, plot=True):
     sim.setup(timestep=0.01)
     
     width_downscale, height_downscale = getDownscaledSensorSize(width_fullscale, height_fullscale, div)
@@ -203,6 +203,12 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
     if keep_polarity :
         pos_events = spikes2ev(spikes[:int(len(spikes)/2)], width_downscale, height_downscale, coord_t, polarity=1)
         neg_events = spikes2ev(spikes[int(len(spikes)/2):], width_downscale, height_downscale, coord_t, polarity=neg_pol)
+    
+    if plot:
+        v = downscale_events.get_data("v").segments[0].filter(name='v')[0]
+        if keep_polarity:
+            v_pos = list(e.item() for e in v[:,0].reshape(-1))
+            v_neg = list(e.item() for e in v[:,1].reshape(-1))
 
     sim.end()
 
@@ -212,6 +218,8 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
     else :
         events = spikes2ev(spikes, width_downscale, height_downscale, coord_t)
     
+    if plot:
+        return events, v_pos, v_neg
     return events
 
 
@@ -221,7 +229,10 @@ def SNN_downscale(
     div=4,
     density=0.2, #????
     keep_polarity=True,
-    simulator_capacity=5000
+    mutual=True,
+    simulator_capacity=5000,
+    time_reduce=True,
+    plot=True
 ):
     """
     Arguments: 
@@ -236,10 +247,15 @@ def SNN_downscale(
     import pyNN.nest as sim
 
     downscaled_events = np.zeros((0,4))
-    events[:,coord_t] *= 0.001
+    if time_reduce:
+        events[:,coord_t] *= 0.001
     coord_p = getPolarityIndex(coord_t)
     neg_pol = getNegativeEventsValue(events, coord_p)
     width_fullscale,height_fullscale=getSensorSize(events)
+
+    if plot:
+        v_pos = []
+        v_neg = []
     
     last_time = 0
     nb_sim = int( np.max(events[:,coord_t]) // simulator_capacity + 1)
@@ -253,8 +269,6 @@ def SNN_downscale(
         spikes[:,coord_t] -= last_time
         sim_length=getTimeLength(spikes, coord_t)
         print("Length simulation: "+str(sim_length)+" ts")
-        print(spikes.shape)
-        print(spikes)
 
         if keep_polarity:
             pos_events = ev2spikes(spikes[spikes[:,coord_p] > 0], coord_t, width_fullscale, height_fullscale)
@@ -263,13 +277,23 @@ def SNN_downscale(
         else : 
             spikes = ev2spikes(spikes, coord_t, width_fullscale, height_fullscale)
         
-        downscaled_spikes = runSim(sim, spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density)
+        downscaled_spikes = runSim(sim, spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual)
+        if plot :
+            downscaled_spikes, vp, vn = downscaled_spikes
+            v_pos = v_pos + vp
+            v_neg = v_neg + vn
+
         downscaled_spikes[:,coord_t] += last_time
         downscaled_events = np.vstack((downscaled_events, downscaled_spikes))
 
         last_time = sim_length
 
-    downscaled_events[:,coord_t] *= 1000
+    if time_reduce:
+        events[:,coord_t] *= 1000
+        downscaled_events[:,coord_t] *= 1000
+    
+    if plot:
+        return downscaled_events, v_pos, v_neg
     return downscaled_events
 
 
@@ -401,7 +425,7 @@ def extrapolateLevels(timestamps, levels, timelength):
     return timestamps, levels
 
 
-def extractIntersections(timestamps, y_curve):
+def extractIntersections(timestamps, y_curve, threshold):
     # compute where y changes direction
     y_directions = np.sign(np.diff(y_curve))
     y_extrema = 1 + np.where(np.diff(y_directions) != 0)[0]
@@ -411,7 +435,7 @@ def extractIntersections(timestamps, y_curve):
     y_segments = np.split(y_curve, y_extrema)
 
     
-    y_levels = range(floor(np.min(y_curve)), ceil(np.max(y_curve))+1)
+    y_levels = np.arange(floor(np.min(y_curve)), ceil(np.max(y_curve))+1, threshold)
     T_events = []
     Y_events = []
     for y_ev in y_levels:
@@ -480,7 +504,7 @@ def logluminance_downscale(
         for fullscale_w in range(w_min, w_max):
             for fullscale_h in range(h_min, h_max):
                 ev_pixel = events[ np.logical_and( events[:,0]==fullscale_w , events[:,1]==fullscale_h ) ]
-                t, levels = ev2points(ev_pixel, threshold, coord_p)
+                t, levels = ev2points(ev_pixel, 1, coord_p)
                 t, levels = extrapolateLevels(t, levels, timelength)
                 
                 if cubic_interpolation:
@@ -500,7 +524,7 @@ def logluminance_downscale(
             fig.plot(T_, mean_level, "--", color="black")
 
         # get events from levels
-        T_events, L_events = extractIntersections(T_, mean_level)
+        T_events, L_events = extractIntersections(T_, mean_level, threshold)
         old_state = 0
         last_event = None
 
