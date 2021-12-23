@@ -7,6 +7,7 @@ Date: 08/2021 - 11/2021
 
 from datetime import time
 from operator import ne
+from pyNN.parameters import Sequence
 import numpy as np
 from numpy.core.shape_base import block
 from tqdm import tqdm
@@ -83,7 +84,8 @@ def ev2spikes(events,coord_t, width, height):
     
     spikes=[[] for _ in range(width*height)]
     for x,y,*r in tqdm(events):
-        spikes[int(x)*height+int(y)].append(float(r[coord_t]))
+        coord = int(np.ravel_multi_index( (int(x),int(y)) , (width, height) ))
+        spikes[coord].append(float(r[coord_t]))
     print("Translation done\n")
     return spikes
 
@@ -106,7 +108,11 @@ def spikes2ev(spikes, width, height, coord_t, polarity=1):
 
 
 def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual=True, plot=True):
-    sim.setup(timestep=0.01)
+    sim.setup(timestep=1)
+
+    max_neurons_per_core = 200
+    sim.set_number_of_neurons_per_core(sim.IF_cond_exp, max_neurons_per_core)
+    sim.set_number_of_neurons_per_core(sim.SpikeSourceArray, max_neurons_per_core)
     
     width_downscale, height_downscale = getDownscaledSensorSize(width_fullscale, height_fullscale, div)
     if keep_polarity :
@@ -115,14 +121,16 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
     else : 
         fullscale_size = width_fullscale * height_fullscale
         downscale_size = width_downscale * height_downscale
-    
+    print("!!!!!!!! ", fullscale_size, downscale_size)
+
     print("Network initialisation...")
+    
     fullscale_events = sim.Population(
         fullscale_size,
         sim.SpikeSourceArray(spike_times=input_spikes),
         label="Full scale events"
     )
-    
+
     if keep_polarity:
         n=2
     else : 
@@ -133,20 +141,39 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
     while i < n:
         for X in range(width_downscale):
             for Y in range(height_downscale):
-
-                subregion_coordonates = np.array([
+                subregion_coordonates = [
                     np.ravel_multi_index( (x,y) , (width_fullscale, height_fullscale) ) + c
-                    for x in range(div*X, div*(X+1)) 
-                    for y in range(div*Y, div*(Y+1)) 
-                ])
+                    for x in range(div*X, div*(X+1)) if x < width_fullscale
+                    for y in range(div*Y, div*(Y+1)) if y < height_fullscale
+                ]
                 
+                subr = []
+                row = []
+                for s in subregion_coordonates:
+                    if len(row) == 0 or s == subregion_coordonates[subregion_coordonates.index(s)-1] + 1 :
+                        # if input_spikes[s] != []:
+                        #     row.append(input_spikes[s])
+                        # else :
+                        #     row.append([sim_length+10])
+                        row.append(s)
+                    else: 
+                        subr.append(
+                            # sim.Population(
+                            #     len(row), 
+                            #     sim.SpikeSourceArray(spike_times=row),
+                            #     label="Full scale subregion "+str(len(subregion_coordonates)+1)
+                            # )
+                            sim.PopulationView(fullscale_events, row)
+                        )
+                        # row=[input_spikes[s] if input_spikes[s] != [] else [sim_length+10]]
+                        row = [s]
                 subregions_fullscale_events.append(
-                    sim.PopulationView(fullscale_events, subregion_coordonates)
+                    subr
                 )
         
         c=int(fullscale_size/2)
         i+=1
-
+    
     downscale_events = sim.Population(
         downscale_size,
         sim.IF_cond_exp(),
@@ -159,15 +186,18 @@ def runSim(sim, input_spikes, sim_length, div, coord_t, neg_pol, width_fullscale
     mutual_inhibition = []
     c=int(downscale_events.size/2)
     for n in range(downscale_events.size):
-        fullscale2downscale.append( sim.Projection(
-            subregions_fullscale_events[n],
-            sim.PopulationView(downscale_events, [n]),
-            connector=sim.AllToAllConnector(),
-            synapse_type=sim.StaticSynapse(weight=density),
-            receptor_type="excitatory",
-            label="Excitatory connection between fullscale and downscale events"
-        ))
-    
+        for row in subregions_fullscale_events[n]:
+            # print(downscale_events.size,len(subregions_fullscale_events),"-", row._indexes, sim.PopulationView(downscale_events, [n])._indexes, end=" ")
+            fullscale2downscale.append( sim.Projection(
+                row,
+                downscale_events,
+                # sim.PopulationView(downscale_events, [n]),
+                connector=sim.AllToAllConnector(),
+                synapse_type=sim.StaticSynapse(weight=density),
+                receptor_type="excitatory",
+                label="Excitatory connection between fullscale and downscale events"
+            ))
+            
         if mutual:
             if n < c: 
                 neuron = sim.PopulationView(downscale_events, [n+c])
@@ -230,7 +260,6 @@ def SNN_downscale(
     density=0.2, #????
     keep_polarity=True,
     mutual=True,
-    simulator_capacity=5000,
     time_reduce=True,
     plot=True
 ):
@@ -244,57 +273,44 @@ def SNN_downscale(
     - keep_polarity (boolean): wether to keep the polarity of events or ignore them (all downscaled events are positive)
     """
 
-    import pyNN.nest as sim
+    import pyNN.spiNNaker as sim
+    spikes = events.copy()
 
-    downscaled_events = np.zeros((0,4))
     if time_reduce:
-        events[:,coord_t] *= 0.001
+        spikes[:,coord_t] *= 0.001
     coord_p = getPolarityIndex(coord_t)
-    neg_pol = getNegativeEventsValue(events, coord_p)
-    width_fullscale,height_fullscale=getSensorSize(events)
+    neg_pol = getNegativeEventsValue(spikes, coord_p)
+    width_fullscale,height_fullscale=getSensorSize(spikes)
 
     if plot:
         v_pos = []
         v_neg = []
     
-    last_time = 0
-    nb_sim = int( np.max(events[:,coord_t]) // simulator_capacity + 1)
-    print("Downscaling with Spiking Neural Network Pooling will run "+str(nb_sim)+" simulations")
-    for s in range(nb_sim):
-        print("\n> Starting simulation "+str(s+1)+"...")
-        spikes = events[ np.logical_and(
-            events[:,coord_t] > s*simulator_capacity,
-            events[:,coord_t] <= (s+1)*simulator_capacity, 
-        ) ]
-        spikes[:,coord_t] -= last_time
-        sim_length=getTimeLength(spikes, coord_t)
-        print("Length simulation: "+str(sim_length)+" ts")
+    print("\n> Starting simulation ...")
+    sim_length=getTimeLength(spikes, coord_t)
+    print("Length simulation: "+str(sim_length)+" ts")
 
-        if keep_polarity:
-            pos_events = ev2spikes(spikes[spikes[:,coord_p] > 0], coord_t, width_fullscale, height_fullscale)
-            neg_events = ev2spikes(spikes[spikes[:,coord_p] < 1], coord_t, width_fullscale, height_fullscale)
-            spikes = pos_events+neg_events
-        else : 
-            spikes = ev2spikes(spikes, coord_t, width_fullscale, height_fullscale)
-        
-        downscaled_spikes = runSim(sim, spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual)
-        if plot :
-            downscaled_spikes, vp, vn = downscaled_spikes
-            v_pos = v_pos + vp
-            v_neg = v_neg + vn
+    if keep_polarity:
+        pos_events = ev2spikes(spikes[spikes[:,coord_p] > 0], coord_t, width_fullscale, height_fullscale)
+        neg_events = ev2spikes(spikes[spikes[:,coord_p] < 1], coord_t, width_fullscale, height_fullscale)
+        spikes = pos_events+neg_events
+    else : 
+        spikes = ev2spikes(spikes, coord_t, width_fullscale, height_fullscale)
+    
+    spikes = runSim(sim, spikes, sim_length, div, coord_t, neg_pol, width_fullscale, height_fullscale, keep_polarity, density, mutual)
+    if plot :
+        spikes, vp, vn = spikes
+        v_pos = v_pos + vp
+        v_neg = v_neg + vn
 
-        downscaled_spikes[:,coord_t] += last_time
-        downscaled_events = np.vstack((downscaled_events, downscaled_spikes))
-
-        last_time = sim_length
+    spikes = np.vstack((np.zeros((0,4)), spikes))  # handles case where no spikes produced by simulation
 
     if time_reduce:
-        events[:,coord_t] *= 1000
-        downscaled_events[:,coord_t] *= 1000
+        spikes[:,coord_t] *= 1000
     
     if plot:
-        return downscaled_events, v_pos, v_neg
-    return downscaled_events
+        return spikes, v_pos, v_neg
+    return spikes
 
 
 
@@ -554,3 +570,19 @@ def logluminance_downscale(
     if plot:
         plt.show()
     return downscaled_events
+
+
+
+# main
+a=np.load("Data/gestures/gesture_target7.npy")
+a = event_count(a,3, div=4)
+b = SNN_downscale(
+    a,
+    3,
+    div=4,
+    density=0.2, 
+    keep_polarity=True,
+    mutual=False,
+    time_reduce=True,
+    plot=True
+)
