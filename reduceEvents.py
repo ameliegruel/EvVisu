@@ -8,6 +8,7 @@ Date: 08/2021 - 02/2022
 import numpy as np
 from math import e, floor, ceil
 import time
+from tqdm import tqdm
 
 
 ### GLOBAL CLASS WITH GENERAL FUNCTIONS ###
@@ -68,7 +69,10 @@ class Reduction():
         return (set([2,3]) - set([self.coord_t])).pop()
 
     def getNegativeEventsValue(self):
-        return np.unique(self.input[self.input[:,self.coord_p] < 1][:,self.coord_p]).item()
+        try :
+            return np.unique(self.input[self.input[:,self.coord_p] < 1][:,self.coord_p]).item()
+        except ValueError:
+            return 0
 
     def getFullscaleCoord(self,x,y):
         return x*self.div, min((x+1)*self.div, self.width_fullscale), y*self.div, min((y+1)*self.div, self.height_fullscale)
@@ -94,7 +98,7 @@ class Reduction():
     def updateT(self):
         self.t += 1
     
-    def runSimulation(self):
+    def run(self):
         self.reduce()
 
     
@@ -158,7 +162,7 @@ class EventCount(Reduction):
             1            :  1,
             self.neg_pol : -1
         }
-
+        
 
     def reduce(self):
         for ev in self.input :    # parcourir en fonction du temps ? => pas forcément plus court 
@@ -234,19 +238,19 @@ class LogLuminance(Reduction):
 
 
     def reduce(self):
-        for n_pixel in range(self.width_downscale*self.height_downscale):
+        for n_pixel in tqdm(range(self.width_downscale*self.height_downscale)):
             downscale_w, downscale_h = np.unravel_index(n_pixel, (self.width_downscale, self.height_downscale))
             
             T_ = np.linspace(0,self.sim_time, self.sensitivity)
             L_ = np.zeros((self.sensitivity, 0))
 
             # get points coordonates from fullscale pixels correspond to n_pixel
-            w_min, w_max, h_min, h_max = getFullscaleCoord(downscale_w, downscale_h, self.div)
+            w_min, w_max, h_min, h_max = self.getFullscaleCoord(downscale_w, downscale_h)
             for fullscale_w in range(w_min, w_max):
                 for fullscale_h in range(h_min, h_max):
                     ev_pixel = self.input[ np.logical_and( self.input[:,0]==fullscale_w , self.input[:,1]==fullscale_h ) ]
-                    t, levels = ev2points(ev_pixel, 1, self.coord_p)
-                    t, levels = extrapolateLevels(t, levels, self.sim_time)
+                    t, levels = self.ev2points(ev_pixel)
+                    t, levels = self.extrapolateLevels(t, levels)
                     
                     if self.cubic_interpolation:
                         cubic_inter = self.s.PchipInterpolator(t, levels)
@@ -286,8 +290,9 @@ class LogLuminance(Reduction):
     def ev2points(self, ev):
         ordinate = 0     # we arbitrarily set the starting level's ordinate at 0: each event's ordinate will then be considered as x*threshold + start 
         points = []
-        ordinate += self.action[ev[self.coord_p]]
-        points.append([ev[3], ordinate])
+        for e in ev:
+            ordinate += self.action[e[self.coord_p]]
+            points.append([e[self.coord_t], ordinate])
         if not len(points):
             return np.zeros((2,0))
         else :
@@ -348,27 +353,27 @@ class LogLuminance(Reduction):
 
 class StochasticStructural(Reduction):
 
-    def __init__(self, sim_time=1e+6, input_ev=np.zeros((0, 4)), neg_pol=0, coord_t=3, div=50, width=128, height=128):
-        super().__init__(sim_time, input_ev, neg_pol, coord_t, div, width, height)
-
+    def __init__(self, sim_time=1e+6, input_ev=np.zeros((0, 4)), coord_t=3, div=50, width=128, height=128):
+        super().__init__(sim_time, input_ev, coord_t, div, width, height)
+        
         self.nb_events_selected = int(div * len(self.input) / 100)
         self.idx = np.random.choice(len(self.input), size=self.nb_events_selected, replace=False)
         self.current_idx = 0
 
     def reduce(self):
-        for ev in self.input_t:
+        for ev in self.input:
             if self.current_idx in self.idx:
                 self.updateEvents(ev)
             self.current_idx += 1
 
 class DeterministicStructural(Reduction):
 
-    def __init__(self, sim_time=1e+6, input_ev=np.zeros((0, 4)), neg_pol=0, coord_t=3, div=2, width=128, height=128):
-        super().__init__(sim_time, input_ev, neg_pol, coord_t, div, width, height)
+    def __init__(self, sim_time=1e+6, input_ev=np.zeros((0, 4)), coord_t=3, div=2, width=128, height=128):
+        super().__init__(sim_time, input_ev, coord_t, div, width, height)
         self.current_idx = 0
 
     def reduce(self):
-        for ev in self.input_t:
+        for ev in self.input:
             if not self.current_idx % self.div:
                 self.updateEvents(ev)
             self.current_idx += 1
