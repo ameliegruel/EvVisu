@@ -7,8 +7,15 @@ Date: 08/2021 - 02/2022
 
 import numpy as np
 from math import e, floor, ceil
+from tqdm import tqdm
 
 ### GLOBAL FUNCTIONS ###
+
+def getNegativeEventsValue(events,coord_p):
+    try :
+        return np.unique(events[events[:,coord_p] < 1][:,coord_p]).item()
+    except ValueError:
+        return 0
 
 def getSensorSize(events):
     return int(np.max(events[::,0]))+1,int(np.max(events[::,1]))+1
@@ -44,6 +51,7 @@ def ev2spikes(events,coord_t, width, height):
     for x,y,*r in tqdm(events):
         spikes[int(x)*height+int(y)].append(float(r[coord_t]))
     print("Translation done\n")
+    print(spikes)
     return spikes
 
 
