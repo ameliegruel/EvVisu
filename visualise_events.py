@@ -14,6 +14,7 @@ Author: Amelie Gruel
 Date: 08/2021
 """
 
+from multiprocessing import Event
 from timeit import repeat
 import numpy as np 
 import csv
@@ -22,6 +23,7 @@ from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
 plt.rcParams['animation.ffmpeg_path'] = '/usr/bin/ffmpeg'
 from matplotlib.patches import Rectangle
 import argparse
+import h5py as h
 import sys
 import os
 import math
@@ -44,16 +46,20 @@ def import_data(f_events):
     format_npy=False
     format_csv=False
 
-    try : 
+    if f_events.endswith('npy') or f_events.endswith('npz'):
         events = np.load(f_events)
         format_npy=True
-    except (ValueError, FileNotFoundError):
-        try :
-            events_per_pixel = [list(filter(lambda x: x!='', e)) for e in list(csv.reader(open(f_events,'r'), delimiter=";", quoting=csv.QUOTE_NONNUMERIC))]   
-            format_csv=True
-        except :
-            print("Error : The input file has to be of format .npy or .csv")
-            sys.exit()
+    elif f_events.endswith('csv'):
+        events_per_pixel = [list(filter(lambda x: x!='', e)) for e in list(csv.reader(open(f_events,'r'), delimiter=";", quoting=csv.QUOTE_NONNUMERIC))]   
+        format_csv=True
+    elif f_events.endswith('hdf5'):
+        events = h.File(f_events,'r')
+        assert 'event' in events.keys()
+        events = np.array(events['event'])
+
+    else :
+        print("Error : The input file has to be of format .npy, .npz, .hdf5 or .csv")
+        sys.exit()
 
     print("Events correctly loaded from "+f_events+"\n")
 
@@ -71,11 +77,14 @@ def import_data(f_events):
     
     return events
 
-def visualise(f_events, unit="milli", fps=30, reduce=False, name_events = "datasets", region_of_interest=False, save=False, save_in='./', display=True):
+def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, name_events = "datasets", region_of_interest=False, save=False, save_in='./', display=True, accumulation=False, frame=False):
 
     if save_in[-1] != '/':
         save_in += '/'
-    path = save_in+'images/'
+    if frame:
+        path = save_in+'frames/'
+    else:
+        path = save_in+'images/'
     
     if type(f_events) == np.ndarray:
         events = f_events
@@ -85,13 +94,30 @@ def visualise(f_events, unit="milli", fps=30, reduce=False, name_events = "datas
     
     bool_temp = True
 
-    # adapt to the 2 possible formalisms (x,y,p,t) or (x,y,t,p)
-    if max(events[:,2] == 1):
+    # adapt to the 3 possible formalisms (x,y,p,t) or (x,y,t,p) or (t,x,y,p)
+    string_coord = [None]*4
+    set_coord = [2,3]
+    if max(events[:,2]) in [0,1]:
         coord_p = 2
-        coord_ts = 3
-    elif max(events[:,3] == 1):
+        set_coord.remove(2)
+    elif max(events[:,3]) in [0,1]:
         coord_p = 3
-        coord_ts = 2
+        set_coord.remove(3)
+    string_coord[coord_p] = 'p'
+
+    if max(events[:,0]) > 1e6:
+        coord_ts = 0
+        coord_x = 1
+        coord_y = set_coord[0]
+    else:
+        coord_ts = set_coord[0]
+        coord_x = 0
+        coord_y = 1
+    string_coord[coord_x] = 'x'
+    string_coord[coord_y] = 'y'
+    string_coord[coord_ts] = 't'
+    
+    print("Coordinates:",''.join(string_coord))
 
     # get the values for positive and negative polarity
     neg_p = min(events[:,coord_p])
@@ -117,60 +143,88 @@ def visualise(f_events, unit="milli", fps=30, reduce=False, name_events = "datas
         print("DONE\n")
 
     # get width and heigth
-    W = max(events[:,0])
-    H = max(events[:,1])
+    if size == (None,None):
+        W = max(events[:,coord_x])
+        H = max(events[:,coord_y])
+    else: 
+        W = size[0]
+        H = size[1]
+
+    # remove empty time at the beginning
+    min_t = min(events[:,coord_ts])
+    events[:,coord_ts] -= min_t
+
+    # get positive and negative events
+    events[:,coord_y] = H - events[:,coord_y]
+    positive_ev = events[ events[:,coord_p] == pos_p ]
+    negative_ev = events[ events[:,coord_p] == neg_p ]
 
     # initialise the figure
     global timestamps
     timestamps=0
-    fig_events = plt.figure(figsize=(10,int(H*10/W)))
+    # fig_events = plt.figure(figsize=(10,int(H*10/W)))
+    fig_events = plt.figure(figsize=(7,int(H*7/W)))
     ax = plt.axes(xlim=(0, W), ylim=(0,H))
     s = fig_events.get_size_inches()[0]  * fig_events.dpi / W
-    scatter_pos_events = ax.scatter([],[], marker="s", animated=True, color="springgreen", label="Positive events", s=s)
-    scatter_neg_events = ax.scatter([],[], marker="s", animated=True, color="dodgerblue", label="Negative events", s=s)
 
-    # in case of foveation, we can display the region of interest
-    if region_of_interest : 
-        nROI = testNumericalInput(input("How many different regions of interest ? "))
-        colors = plt.cm.get_cmap('hsv',nROI)
-        for n in range(nROI):
-            print(str(n+1)+" region of interest's coordinates:")
-            xmin = testNumericalInput(input("x min: "))
-            xmax = testNumericalInput(input("x max: "))
-            ymin = testNumericalInput(input("y min: "))
-            ymax = testNumericalInput(input("y max: "))
-            ax.add_patch(Rectangle(
-                (xmin,ymin),
-                xmax-xmin,
-                ymax-ymin,
-                edgecolor=colors(n),
-                fill=False
-            ))
-            print()
+    if accumulation:
+        scatter_pos_events = ax.scatter(positive_ev[:,coord_x], positive_ev[:,coord_y], marker="s", color="springgreen", label="Positive events", s=s)
+        scatter_neg_events = ax.scatter(negative_ev[:,coord_x], negative_ev[:,coord_y], marker="s", color="dodgerblue", label="Negative events", s=s)
 
-    # get positive and negative events
-    events[:,1] = H - events[:,1]
-    positive_ev = events[ events[:,coord_p] == pos_p ]
-    negative_ev = events[ events[:,coord_p] == neg_p ]
+        ext = ".png"
+        pred = "frame_"
 
-    # define the animation
-    def animate(i):
-        global timestamps
-        previous_timestamps = timestamps
-        timestamps += frame_interval
-        
-        scatter_pos_events.set_offsets(positive_ev[(positive_ev[:,coord_ts] >= previous_timestamps) & (positive_ev[:,coord_ts] < timestamps)][: , :2])
-        scatter_neg_events.set_offsets(negative_ev[(negative_ev[:,coord_ts] >= previous_timestamps) & (negative_ev[:,coord_ts] < timestamps)][: , :2])
-        
-        return scatter_pos_events, scatter_neg_events,
+    else : 
+        scatter_pos_events = ax.scatter([],[], marker="s", animated=True, color="springgreen", label="Positive events", s=s)
+        scatter_neg_events = ax.scatter([],[], marker="s", animated=True, color="dodgerblue", label="Negative events", s=s)
 
+        # in case of foveation, we can display the region of interest
+        if region_of_interest : 
+            nROI = testNumericalInput(input("How many different regions of interest ? "))
+            colors = plt.cm.get_cmap('hsv',nROI)
+            for n in range(nROI):
+                print(str(n+1)+" region of interest's coordinates:")
+                xmin = testNumericalInput(input("x min: "))
+                xmax = testNumericalInput(input("x max: "))
+                ymin = testNumericalInput(input("y min: "))
+                ymax = testNumericalInput(input("y max: "))
+                ax.add_patch(Rectangle(
+                    (xmin,ymin),
+                    xmax-xmin,
+                    ymax-ymin,
+                    edgecolor=colors(n),
+                    fill=False
+                ))
+                print()
+
+        # define the animation
+        def animate(i):
+            global timestamps
+            previous_timestamps = timestamps
+            timestamps += frame_interval
+            
+            scatter_pos_events.set_offsets(positive_ev[(positive_ev[:,coord_ts] >= previous_timestamps) & (positive_ev[:,coord_ts] < timestamps)][: , coord_x:coord_y+1])
+            scatter_neg_events.set_offsets(negative_ev[(negative_ev[:,coord_ts] >= previous_timestamps) & (negative_ev[:,coord_ts] < timestamps)][: , coord_x:coord_y+1])
+            
+            return scatter_pos_events, scatter_neg_events,
+
+        animation = FuncAnimation(fig_events, animate, blit=True, frames = int(time_length * fps), interval=1e3/fps, repeat=False)
+
+        ext = ".gif"
+        pred = "animation_"
+    
     add=""
-    animation = FuncAnimation(fig_events, animate, blit=True, frames = int(time_length * fps), interval=1e3/fps, repeat=False)
     if reduce:
         add=" reduced"
-    plt.title("Events from "+name_events+add+" over time")
-    plt.xlabel("Width (in pixels)")
-    plt.ylabel("Height (in pixels)")
+    
+    if frame:
+        plt.xticks([])
+        plt.yticks([])
+        plt.subplots_adjust(left=0.002, bottom=0.002, right=0.998, top=0.998)
+    else:
+        plt.title("Events from "+name_events+add+" over time")
+        plt.xlabel("Width (in pixels)")
+        plt.ylabel("Height (in pixels)")
     plt.draw()
 
     # save the video
@@ -178,11 +232,16 @@ def visualise(f_events, unit="milli", fps=30, reduce=False, name_events = "datas
         if reduce :
             add="reduced_" 
         os.makedirs(path, exist_ok=True)
-        f = path+"animation_"+add+name_events.replace('.npy',".gif")
-        print(f)
-        writergif = PillowWriter(fps=fps)
-        animation.save(f, writer=writergif)
-        print("Animation correctly saved as "+f)
+        f = path+pred+add+name_events.replace('.npy',ext).replace('.hdf5',ext)
+        
+        if accumulation:
+            plt.savefig(f)
+            print("Frame correctly saved as "+f)
+
+        else:
+            writergif = PillowWriter(fps=fps)
+            animation.save(f, writer=writergif)
+            print("Animation correctly saved as "+f)
 
     if display:
         plt.show()
@@ -194,12 +253,26 @@ if len(sys.argv) > 1 :
     parser.add_argument("events", metavar="E", type=str, nargs="+", help="Input events with formalism (x,y,t,p)")
     parser.add_argument("--unit", "-u", help="Define the timestamps' unit of measure", nargs=1, type=str, default=["milli"])
     parser.add_argument("--frames-per-second", "-fps", help="Number of frames per second", type=int, default=30)
+    parser.add_argument("--accumulation", "-accu", help="Visualise the events accumulated in a frame", action="store_true", default=False)
     parser.add_argument("--reduce", "-r", help="Reduce the events", action="store_true", default=False)
     parser.add_argument("--region_of_interest", "-ROI", help="Visualise the region of interest (in case of foveation)", action="store_true", default=False)
+    parser.add_argument("--width", "-W", help="Width of the sensor", type=int, default=None)
+    parser.add_argument("--height", "-H", help="Height", type=int, default=None)
     parser.add_argument("--save", "-s", help="Save the animation", action="store_true", default=False)
     parser.add_argument("--save_in", "-si", help="File in which to save the animation", type=str, default="./")
     parser.add_argument("--save_csv_as_npy", "-C2N", help="Save the converted csv file into a npy file (quicker to process)", action="store_true", default=False)
     parser.add_argument("--no-display", "-nd", help="No display of plot", action="store_true", default=False)
     args = parser.parse_args()
     
-    visualise(args.events[0],unit=args.unit[0],reduce=args.reduce, region_of_interest=args.region_of_interest, name_events=args.events[0], save=args.save, save_in=args.save_in, display=not args.no_display)
+    visualise(
+        args.events[0],
+        unit=args.unit[0],
+        reduce=args.reduce, 
+        accumulation=args.accumulation, 
+        region_of_interest=args.region_of_interest, 
+        size = (args.width, args.height),
+        name_events=args.events[0], 
+        save=args.save, 
+        save_in=args.save_in, 
+        display=not args.no_display
+    )
