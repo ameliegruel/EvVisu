@@ -19,16 +19,20 @@ from timeit import repeat
 import numpy as np 
 import csv
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
+from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter, ArtistAnimation
 plt.rcParams['animation.ffmpeg_path'] = '/usr/bin/ffmpeg'
 from matplotlib.patches import Rectangle
 import argparse
 import h5py as h
 import sys
 import os
+from tqdm import tqdm
 import math
+from datetime import datetime as dt
 
 timestamps = 0
+LEN = 60 # length animation in seconds
+N = 1
 
 # error handling
 def testNumericalInput(user_input):
@@ -77,7 +81,7 @@ def import_data(f_events):
     
     return events
 
-def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, name_events = "datasets", region_of_interest=False, save=False, save_in='./', display=True, accumulation=False, frame=False):
+def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, name_events = "datasets", region_of_interest=False, save=False, save_in='./', display=True, accumulation=False, frame=False, first_second=False):
 
     if save_in[-1] != '/':
         save_in += '/'
@@ -117,24 +121,41 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
     string_coord[coord_y] = 'y'
     string_coord[coord_ts] = 't'
     
-    print("Coordinates:",''.join(string_coord))
-
     # get the values for positive and negative polarity
     neg_p = min(events[:,coord_p])
     pos_p = max(events[:,coord_p])
 
+    color_map = {
+        neg_p: np.array([30,144,255]), # dodgerblue
+        pos_p: np.array([ 0,255,127])  # springgreen
+        # neg_p: np.array([ 0,255,127]), # dodgerblue
+        # pos_p: np.array([ 0,255,  0])  # springgreen
+    }
+
     # adapt to the timestamps unit of measure
     if unit == "milli":
         frame_interval = 1
-        time_length = max(events[:,coord_ts]) / 1e3
+        time_length = max(events[:,coord_ts])
+        one_second = 1e3
+        len_second = LEN*one_second
     elif unit == "nano":
-        frame_interval = 1e6/24 # ms
-        time_length = max(events[:,coord_ts]) / 1e6
+        # frame_interval = 1e6/24 # ms
+        time_length = max(events[:,coord_ts])
+        one_second = 1e6
+        frame_interval = one_second/fps # ms
+        len_second = LEN*one_second
     elif unit == "s":
         frame_interval = 0.01
         time_length = max(events[:,coord_ts])
         bool_temp=False
+        one_second = 1
+        len_second = LEN*one_second
 
+    # get only first second
+    if first_second:
+        events = events[events[:, coord_ts] < len_second]
+        time_length = len_second
+    
     # reduce the events
     if reduce : 
         d = testNumericalInput(input("Reduce spatially by: "))
@@ -144,8 +165,8 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
 
     # get width and heigth
     if size == (None,None):
-        W = max(events[:,coord_x])
-        H = max(events[:,coord_y])
+        W = int(max(events[:,coord_x])+1)
+        H = int(max(events[:,coord_y])+1)
     else: 
         W = size[0]
         H = size[1]
@@ -155,9 +176,7 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
     events[:,coord_ts] -= min_t
 
     # get positive and negative events
-    events[:,coord_y] = H - events[:,coord_y]
-    positive_ev = events[ events[:,coord_p] == pos_p ]
-    negative_ev = events[ events[:,coord_p] == neg_p ]
+    events[:,coord_y] = H - 1 - events[:,coord_y]
 
     # initialise the figure
     global timestamps
@@ -165,18 +184,27 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
     # fig_events = plt.figure(figsize=(10,int(H*10/W)))
     fig_events = plt.figure(figsize=(7,int(H*7/W)))
     ax = plt.axes(xlim=(0, W), ylim=(0,H))
-    s = fig_events.get_size_inches()[0]  * fig_events.dpi / W
 
     if accumulation:
-        scatter_pos_events = ax.scatter(positive_ev[:,coord_x], positive_ev[:,coord_y], marker="s", color="springgreen", label="Positive events", s=s)
-        scatter_neg_events = ax.scatter(negative_ev[:,coord_x], negative_ev[:,coord_y], marker="s", color="dodgerblue", label="Negative events", s=s)
+        matrix_events = 255*np.ones((H,W,3)).astype(int) # white background
+        events = events[events[:,coord_ts] < len_second]
+        max_x = max_y = 0
+        for ev in tqdm(events):
+            if ev[coord_x] > max_x:
+                max_x = ev[coord_x]
+            if ev[coord_y] > max_y:
+                max_y = ev[coord_y]
+            matrix_events[int(ev[coord_y]),int(ev[coord_x])] = color_map[ev[coord_p]]
+        print(matrix_events)
+        print(W,H,'-',max_x, max_y)
+
+        scatter_events = ax.imshow(matrix_events)
 
         ext = ".png"
         pred = "frame_"
 
     else : 
-        scatter_pos_events = ax.scatter([],[], marker="s", animated=True, color="springgreen", label="Positive events", s=s)
-        scatter_neg_events = ax.scatter([],[], marker="s", animated=True, color="dodgerblue", label="Negative events", s=s)
+        print('Generate video...')
 
         # in case of foveation, we can display the region of interest
         if region_of_interest : 
@@ -197,18 +225,27 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
                 ))
                 print()
 
-        # define the animation
-        def animate(i):
-            global timestamps
+        timestamps = 0
+        frames = []
+        nb_frames = int(time_length * fps/one_second)
+
+        for f in tqdm(range(nb_frames)):
+            # print(f'Step {f}/{nb_frames}') 
             previous_timestamps = timestamps
             timestamps += frame_interval
-            
-            scatter_pos_events.set_offsets(positive_ev[(positive_ev[:,coord_ts] >= previous_timestamps) & (positive_ev[:,coord_ts] < timestamps)][: , coord_x:coord_y+1])
-            scatter_neg_events.set_offsets(negative_ev[(negative_ev[:,coord_ts] >= previous_timestamps) & (negative_ev[:,coord_ts] < timestamps)][: , coord_x:coord_y+1])
-            
-            return scatter_pos_events, scatter_neg_events,
 
-        animation = FuncAnimation(fig_events, animate, blit=True, frames = int(time_length * fps), interval=1e3/fps, repeat=False)
+            frame_events = events[(events[:,coord_ts] >= previous_timestamps) & (events[:,coord_ts] < timestamps)]
+
+            matrix_events = 255 * np.ones((H,W,3),np.int32) # white background  => *0 for black background
+            for ev in frame_events:
+                matrix_events[int(ev[coord_y]),int(ev[coord_x])] = color_map[ev[coord_p]]
+            
+            frame = ax.imshow(matrix_events, animated=True)
+            if f == 0:
+                ax.imshow(matrix_events)
+            frames.append([frame])
+
+        animation = ArtistAnimation(fig_events, frames, blit=True, interval=1e3/fps, repeat=True)
 
         ext = ".gif"
         pred = "animation_"
@@ -229,6 +266,7 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
 
     # save the video
     if save : 
+        print('Saving...')
         if reduce :
             add="reduced_" 
         os.makedirs(path, exist_ok=True)
@@ -241,6 +279,7 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
         else:
             writergif = PillowWriter(fps=fps)
             animation.save(f, writer=writergif)
+            # animation.save(f, writer='imagemagick')
             print("Animation correctly saved as "+f)
 
     if display:
@@ -248,6 +287,8 @@ def visualise(f_events, unit="milli", fps=30, size=(None,None), reduce=False, na
 
 
 if len(sys.argv) > 1 :
+    start = dt.now()
+
     # initialise parser
     parser = argparse.ArgumentParser(description="Visualise events over time")
     parser.add_argument("events", metavar="E", type=str, nargs="+", help="Input events with formalism (x,y,t,p)")
@@ -262,6 +303,7 @@ if len(sys.argv) > 1 :
     parser.add_argument("--save_in", "-si", help="File in which to save the animation", type=str, default="./")
     parser.add_argument("--save_csv_as_npy", "-C2N", help="Save the converted csv file into a npy file (quicker to process)", action="store_true", default=False)
     parser.add_argument("--no-display", "-nd", help="No display of plot", action="store_true", default=False)
+    parser.add_argument("--first-second", "-fs", help="Display only first second", action="store_true", default=False)
     args = parser.parse_args()
     
     visualise(
@@ -274,5 +316,7 @@ if len(sys.argv) > 1 :
         name_events=args.events[0], 
         save=args.save, 
         save_in=args.save_in, 
-        display=not args.no_display
+        display=not args.no_display,
+        first_second=args.first_second
     )
+    print(f'Time to visualise {args.events[0]}: {(dt.now() - start).total_seconds()} seconds')
